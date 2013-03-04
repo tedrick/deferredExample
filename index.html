@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+  <head>
+		<meta charset="utf-8" />
+		<!-- Always force latest IE rendering engine (even in intranet) & Chrome Frame
+		Remove this if you use the .htaccess -->
+		<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+		<title>index</title>
+		<meta name="description" content="" />
+		<meta name="author" content="jame6423" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<!-- Replace favicon.ico & apple-touch-icon.png in the root of your domain and delete these references -->
+		<link rel="shortcut icon" href="/favicon.ico" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<link rel="stylesheet" type="text/css" href="http://serverapi.arcgisonline.com/jsapi/arcgis/3.3/js/dojo/dijit/themes/tundra/tundra.css">
+		<link rel="stylesheet" type="text/css" href="http://serverapi.arcgisonline.com/jsapi/arcgis/3.3/js/esri/css/esri.css" />
+		<link rel="stylesheet" type="text/css" href="style.css" />
+		<script type="text/javascript">
+			var djConfig = {
+				parseOnLoad : true
+			};
+
+		</script>
+		<script type="text/javascript" src="http://serverapi.arcgisonline.com/jsapi/arcgis/?v=3.3"></script>
+		<script type="text/javascript">
+			dojo.require("dijit.layout.BorderContainer");
+			dojo.require("dijit.layout.TabContainer");
+			dojo.require("dijit.layout.ContentPane");
+			dojo.require("dijit.form.Button");
+			dojo.require("dojo.DeferredList");
+
+			dojo.require('esri.map');
+			dojo.require('esri.tasks.query');
+
+			var countyURL = "http://services.arcgisonline.com/ArcGIS/rest/services/Demographics/USA_Population_Density/MapServer/3"
+
+			var map, grid, queryTask, symbol;
+
+			function init() {
+				map = new esri.Map('map');
+				var basemap = new esri.layers.ArcGISTiledMapServiceLayer("http://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer");
+				map.addLayer(basemap);
+				queryTask = new esri.tasks.QueryTask(countyURL);
+				symbol = new esri.symbol.SimpleFillSymbol(esri.symbol.SimpleFillSymbol.STYLE_SOLID, 
+						new esri.symbol.SimpleLineSymbol(esri.symbol.SimpleLineSymbol.STYLE_NULL, new dojo.Color([255, 0, 0]), 0), 
+						new dojo.Color([255, 0, 0, 0.25]));
+
+				//Create a grid
+				require(["dgrid/OnDemandGrid", "dojo/_base/declare"], function(Grid, declare) {
+					grid = new (declare(Grid))({
+						bufferRows : Infinity,
+						columns : {
+							'COUNTY' : {
+								label : 'County'
+							},
+							'STATE' : {
+								label : 'State'
+							},
+						}
+					}, 'table');
+					grid.on(".dgrid-row:click", onSelect);
+
+				});
+			}
+
+			function loadCounties() {
+				//Use an ArcGIS Online county service
+				var countyFields = ["ID", "NAME", "ST_ABBREV", "TOTPOP_CY", "POPDENS_CY"]
+
+				//Based on the distribution of county names, the following groups all yield results less than 1,000
+				var countySets = [["A", "B"], ["C", "D"], ["E", "F", "G", "H"], ["I", "J", "K", "L"], ["M", "N", "O"], ["P", "Q", "R"], ["S", "T", "U", "V"], ["W", "X", "Y", "Z"]];
+
+				var allQueries = [];
+
+				dojo.forEach(countySets, function(countySet) {
+					// Create a query
+					var query = new esri.tasks.Query();
+
+					// where statement pattern: NAME LIKE 'A%' OR NAME LIKE 'B%'
+					query.where = "NAME LIKE '" + countySet.join("%' OR NAME LIKE '") + "%'"
+
+					//Only want field information
+					query.returnGeometry = false;
+					query.outFields = countyFields;
+
+					//Make the request for these letters
+					var thisRequest = queryTask.execute(query);
+
+					//Function to respond to individual queries
+					thisRequest.then(message('Got ' + countySet.join(", ")))
+
+					//Add this to allQueries
+					allQueries.push(thisRequest)
+				});
+				//Create a DeferredList from the individual deferreds
+				var queryList = new dojo.DeferredList(allQueries);
+
+				//Now this will run once all the queries complete
+				queryList.then(processQueries)
+			}
+
+			function message(msg) {
+				console.log(msg);
+				var msgPane = dijit.byId('messages');
+				msgPane.set('content', msgPane.get('content') + '<br />' + msg);
+			}
+
+			function processQueries(results) {
+				console.log('All Done');
+				//Organize the results into an array
+				var allCounties = [];
+				dojo.forEach(results, function(thisResult) {
+					fSet = thisResult[1];
+					//Create an Array of County, State and graphic
+					var thisData = dojo.map(fSet.features, function(feature) {
+						return {
+							'COUNTY' : feature.attributes.NAME,
+							'STATE' : feature.attributes.ST_ABBREV,
+							'ID' : feature.attributes.ID,
+							'graphic' : feature
+						}
+					});
+					allCounties.push.apply(allCounties, thisData);
+				});
+				console.log(allCounties);
+
+				//Load the counties into a Memory store
+				require(["dojo/store/Memory"], function(Memory) {
+					var store = new Memory({
+						data : allCounties
+					});
+					grid.set("store", store)
+				});
+				
+				//Move to the table
+				dijit.byId('tab').selectChild(dijit.byId("tablePane"));
+			}
+
+			function onSelect(e) {
+				var thisRow = grid.row(e).data;
+				var rowQuery = new esri.tasks.Query();
+				rowQuery.where = "ID = '" + thisRow.ID + "'";
+				rowQuery.returnGeometry = true;
+				var goRequest = queryTask.execute(rowQuery);
+				goRequest.then(function(fSet) {
+					console.log('hello');
+					map.graphics.clear();
+					var graphic = fSet.features[0];
+					graphic.setSymbol(symbol);
+					console.log(graphic);
+					map.graphics.add(graphic);
+					map.setExtent(graphic.geometry.getExtent().expand(2));
+				})
+			}
+
+
+			dojo.addOnLoad(init);
+
+		</script>
+	</head>
+	<body class="tundra">
+		<div id="bc" data-dojo-type="dijit.layout.BorderContainer" data-dojo-props='design:"headline", gutters:false'>
+			<div id="header" data-dojo-type="dijit.layout.ContentPane" data-dojo-props='region:"top"'>
+				<h1>AJAX &amp; multiple requests examples</h1>
+			</div>
+			<div id="map" data-dojo-type="dijit.layout.ContentPane" data-dojo-props='region:"center"'></div>
+			<div id="tab" data-dojo-type="dijit.layout.TabContainer" data-dojo-props='region:"right"'>
+				<div id="messages" data-dojo-type="dijit.layout.ContentPane" data-dojo-props='title:"Messages"'>
+					<button onclick="loadCounties()" data-dojo-type="dijit.form.Button">
+						Load Data
+					</button>
+				</div>
+				<div id="tablePane" data-dojo-type="dijit.layout.ContentPane" data-dojo-props='title:"County List"'>
+					<table id="table" style="width:100%; height: 80%"></table>
+				</div>
+			</div>
+		</div>
+	</body>
+</html>
